@@ -29,7 +29,7 @@ components_manager:
         dynamic-config:                      # Dynamic config storage options, do nothing
             fs-cache-path: ''
         dynamic-config-fallbacks:            # Load options from file and push them into the dynamic config storage.
-            fallback-path: /Users/mbulhakov/work/userver/samples/static_service/dynamic_config_fallback.json
+            fallback-path: /etc/telegram_bot_service/dynamic_config_fallback.json
         dns-client:                     # Asynchronous DNS component
             fs-task-processor: fs-task-processor
         testsuite-support:
@@ -37,5 +37,5 @@ components_manager:
             fs-task-processor: main-task-processor
         telegram-bot-service:
             task-processor: main-task-processor
-            long-polling-timeout: 60s # 'timeout' from https://core.telegram.org/bots/api#getupdates
+            polling-timeout: 60s # 'timeout' from https://core.telegram.org/bots/api#getupdates
             network-timeout: 10s

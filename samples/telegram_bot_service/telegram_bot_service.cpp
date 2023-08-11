@@ -1,5 +1,13 @@
+#include <userver/testsuite/testsuite_support.hpp>
 #include <userver/utest/using_namespace_userver.hpp>
 
+#include <fmt/format.h>
+#include <boost/algorithm/string.hpp>
+#include <boost/range/adaptors.hpp>
+#include <boost/range/algorithm/max_element.hpp>
+#include <optional>
+
+/// [Telegram bot service sample - component]
 #include <userver/clients/dns/component.hpp>
 #include <userver/clients/http/component.hpp>
 #include <userver/components/component.hpp>
@@ -11,17 +19,9 @@
 #include <userver/http/url.hpp>
 #include <userver/logging/impl/logger_base.hpp>
 #include <userver/logging/log.hpp>
-#include <userver/testsuite/testsuite_support.hpp>
 #include <userver/utils/async.hpp>
 #include <userver/utils/daemon_run.hpp>
 #include <userver/yaml_config/merge_schemas.hpp>
-
-#include <boost/algorithm/string.hpp>
-#include <boost/range/adaptors.hpp>
-#include <boost/range/algorithm/max_element.hpp>
-#include <fmt/format.h>
-
-#include <optional>
 
 namespace samples::telegram {
 
@@ -35,18 +35,19 @@ constexpr auto kContentHeaders = {
     std::make_pair<std::string_view, std::string_view>("Content-Type",
                                                        "application/json")};
 
-void log_bot_info(clients::http::Client &http_client, std::string_view token,
+void log_bot_info(clients::http::Client& http_client, std::string_view token,
                   std::chrono::milliseconds network_timeout) {
   const auto get_me_url = fmt::format("{}{}/getMe", kTelegramUrlPrefix, token);
 
   const auto response = http_client.CreateRequest()
                             .get(get_me_url)
                             .timeout(network_timeout)
+                            .retry()
                             .perform();
 
   response->raise_for_status();
 
-  const auto &bot_info =
+  const auto& bot_info =
       formats::json::FromString(response->body_view())["result"];
   const auto bot_name = bot_info["first_name"].As<std::string>();
   const auto bot_username = bot_info["username"].As<std::string>();
@@ -55,10 +56,9 @@ void log_bot_info(clients::http::Client &http_client, std::string_view token,
                             bot_username);
 }
 
-void send_message(clients::http::Client &http_client, std::string token,
+void send_message(clients::http::Client& http_client, std::string token,
                   std::chrono::milliseconds network_timeout, int64_t chat_id,
                   int64_t message_id, std::string text) {
-
   const auto send_message_url =
       fmt::format("{}{}/sendMessage", kTelegramUrlPrefix, token);
 
@@ -77,17 +77,17 @@ void send_message(clients::http::Client &http_client, std::string token,
   response->raise_for_status();
 }
 
-void poll_updates(clients::http::Client &http_client, std::string token,
+void poll_updates(clients::http::Client& http_client, std::string token,
                   std::string task_processor_name,
                   std::chrono::milliseconds network_timeout,
-                  std::chrono::seconds long_polling_timeout) {
+                  std::chrono::seconds polling_timeout) {
   const auto get_updates_url =
       fmt::format("{}{}/getUpdates", kTelegramUrlPrefix, token);
 
   formats::json::ValueBuilder body_template;
-  body_template["timeout"] = long_polling_timeout.count();
+  body_template["timeout"] = polling_timeout.count();
 
-  // Full list: [“message”, “edited_channel_post”, “callback_query”]
+  /// Full list: [“message”, “edited_channel_post”, “callback_query”]
   auto allowed_updates =
       formats::json::ValueBuilder{formats::json::Type::kArray};
   allowed_updates.PushBack("message");
@@ -106,13 +106,13 @@ void poll_updates(clients::http::Client &http_client, std::string token,
           http_client.CreateRequest()
               .post(get_updates_url,
                     formats::json::ToString(body.ExtractValue()))
-              .timeout(long_polling_timeout)
+              .timeout(polling_timeout)
               .headers(kContentHeaders)
               .perform();
 
       response->raise_for_status();
 
-      const auto &updates =
+      const auto& updates =
           formats::json::FromString(response->body_view())["result"];
 
       if (updates.IsEmpty()) {
@@ -122,23 +122,22 @@ void poll_updates(clients::http::Client &http_client, std::string token,
       const auto latest_update_id =
           *boost::range::max_element(boost::copy_range<std::vector<int64_t>>(
               updates | boost::adaptors::transformed(
-                            [](const formats::json::Value &update) {
+                            [](const formats::json::Value& update) {
                               return update["update_id"].As<int64_t>();
                             })));
 
-      // https://core.telegram.org/bots/api#getupdates:
-      // "Must be greater by one than the highest among the identifiers of
-      // previously received updates."
+      /// https://core.telegram.org/bots/api#getupdates:
+      /// "Must be greater by one than the highest among the identifiers of
+      /// previously received updates."
       offset.emplace(latest_update_id + 1);
 
       std::vector<engine::Task> tasks;
-      for (const auto &update : updates) {
-        const auto &message = update["message"];
+      for (const auto& update : updates) {
+        const auto& message = update["message"];
 
         auto text = message["text"].As<std::string>();
         if (boost::algorithm::starts_with(text, kEchoCommand) &&
             text != kEchoCommand) {
-
           std::string reply_text{text.data() + kEchoCommand.size(),
                                  text.size() - kEchoCommand.size()};
 
@@ -151,56 +150,56 @@ void poll_updates(clients::http::Client &http_client, std::string token,
         }
         engine::WaitAllChecked(tasks);
       }
-    } catch (const std::exception &e) {
+    } catch (const std::exception& e) {
       LOG_ERROR() << "Exception occured during updates' proccess: " << e.what();
     }
   }
 }
-} // namespace
+}  // namespace
 
 class EchoBot final : public components::LoggableComponentBase {
-public:
+ public:
   // name of your component to refer in static config
   static constexpr std::string_view kName = "telegram-bot-service";
 
-  EchoBot(const components::ComponentConfig &config,
-          const components::ComponentContext &context);
+  EchoBot(const components::ComponentConfig& config,
+          const components::ComponentContext& context);
   ~EchoBot() override final;
 
   static yaml_config::Schema GetStaticConfigSchema();
 
-private:
+ private:
   concurrent::BackgroundTaskStorage loop_;
 };
 
-EchoBot::EchoBot(const components::ComponentConfig &config,
-                 const components::ComponentContext &context)
+EchoBot::EchoBot(const components::ComponentConfig& config,
+                 const components::ComponentContext& context)
     : components::LoggableComponentBase(config, context) {
   const auto task_processor_name = config["task-processor"].As<std::string>();
-  const auto long_polling_timeout =
-      config["long-polling-timeout"].As<std::chrono::seconds>();
+  const auto polling_timeout =
+      config["polling-timeout"].As<std::chrono::seconds>();
   const auto network_timeout =
       config["network-timeout"].As<std::chrono::milliseconds>();
-  auto &http_client =
+  auto& http_client =
       context.FindComponent<components::HttpClient>().GetHttpClient();
 
   const auto token = std::getenv(kTelegramToken);
 
-  loop_.AsyncDetach(task_processor_name, [token, long_polling_timeout,
-                                          task_processor_name, network_timeout,
-                                          &http_client] {
-    try {
-      if (logging::GetDefaultLogger().GetLevel() <= logging::Level::kInfo) {
-        log_bot_info(http_client, token, network_timeout);
-      }
+  loop_.AsyncDetach(
+      task_processor_name, [token, polling_timeout, task_processor_name,
+                            network_timeout, &http_client] {
+        try {
+          if (logging::GetDefaultLogger().GetLevel() <= logging::Level::kInfo) {
+            log_bot_info(http_client, token, network_timeout);
+          }
 
-      poll_updates(http_client, token, std::move(task_processor_name),
-                   network_timeout, long_polling_timeout);
-    } catch (const std::exception &e) {
-      LOG_ERROR() << "Loop encountered exception: " << e.what();
-      throw;
-    }
-  });
+          poll_updates(http_client, token, std::move(task_processor_name),
+                       network_timeout, polling_timeout);
+        } catch (const std::exception& e) {
+          LOG_ERROR() << "Loop encountered exception: " << e.what();
+          throw;
+        }
+      });
 }
 
 EchoBot::~EchoBot() { loop_.CancelAndWait(); }
@@ -214,7 +213,7 @@ properties:
     task-processor:
         type: string
         description: task processor to run HTTP requests
-    long-polling-timeout:
+    polling-timeout:
         type: string
         description: timeout from https://core.telegram.org/bots/api#getupdates
         defaultDescription: 30s
@@ -225,9 +224,9 @@ properties:
 )");
 }
 
-} // namespace samples::telegram
+}  // namespace samples::telegram
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   const auto component_list = components::MinimalComponentList()
                                   .Append<components::TestsuiteSupport>()
                                   .Append<clients::dns::Component>()
