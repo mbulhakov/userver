@@ -2,7 +2,6 @@
 
 #include <userver/clients/dns/component.hpp>
 #include <userver/clients/http/component.hpp>
-#include <userver/clients/http/form.hpp>
 #include <userver/components/component.hpp>
 #include <userver/components/loggable_component_base.hpp>
 #include <userver/components/minimal_component_list.hpp>
@@ -32,6 +31,10 @@ constexpr auto kTelegramToken = "TG_BOT_TOKEN";
 constexpr auto kTelegramUrlPrefix = "https://api.telegram.org/bot";
 constexpr std::string_view kEchoCommand = "/echo ";
 
+constexpr auto kContentHeaders = {
+    std::make_pair<std::string_view, std::string_view>("Content-Type",
+                                                       "application/json")};
+
 void log_bot_info(clients::http::Client &http_client, std::string_view token,
                   std::chrono::milliseconds network_timeout) {
   const auto get_me_url = fmt::format("{}{}/getMe", kTelegramUrlPrefix, token);
@@ -53,22 +56,23 @@ void log_bot_info(clients::http::Client &http_client, std::string_view token,
 }
 
 void send_message(clients::http::Client &http_client, std::string token,
-                  std::chrono::milliseconds network_timeout,
-                  std::string chat_id, std::string message_id,
-                  std::string text) {
+                  std::chrono::milliseconds network_timeout, int64_t chat_id,
+                  int64_t message_id, std::string text) {
 
   const auto send_message_url =
       fmt::format("{}{}/sendMessage", kTelegramUrlPrefix, token);
 
-  clients::http::Form form;
-  form.AddContent("chat_id", chat_id);
-  form.AddContent("reply_to_message_id", message_id);
-  form.AddContent("text", text);
+  formats::json::ValueBuilder body;
+  body["chat_id"] = chat_id;
+  body["reply_to_message_id"] = message_id;
+  body["text"] = text;
 
-  const auto response = http_client.CreateRequest()
-                            .post(send_message_url, form)
-                            .timeout(network_timeout)
-                            .perform();
+  const auto response =
+      http_client.CreateRequest()
+          .post(send_message_url, formats::json::ToString(body.ExtractValue()))
+          .timeout(network_timeout)
+          .headers(kContentHeaders)
+          .perform();
 
   response->raise_for_status();
 }
@@ -80,23 +84,31 @@ void poll_updates(clients::http::Client &http_client, std::string token,
   const auto get_updates_url =
       fmt::format("{}{}/getUpdates", kTelegramUrlPrefix, token);
 
-  clients::http::Form form;
-  form.AddContent("timeout", std::to_string(long_polling_timeout.count()));
+  formats::json::ValueBuilder body_template;
+  body_template["timeout"] = long_polling_timeout.count();
 
   // Full list: [“message”, “edited_channel_post”, “callback_query”]
-  form.AddContent("allowed_updates", "[\"message\"]");
+  auto allowed_updates =
+      formats::json::ValueBuilder{formats::json::Type::kArray};
+  allowed_updates.PushBack("message");
 
-  std::optional<int32_t> offset;
+  body_template["allowed_updates"] = allowed_updates;
+
+  std::optional<int64_t> offset;
   while (!engine::current_task::ShouldCancel()) {
+    auto body = body_template;
     try {
       if (offset) {
-        form.AddContent("offset", std::to_string(*offset));
+        body["offset"] = *offset;
       }
 
-      const auto response = http_client.CreateRequest()
-                                .post(get_updates_url, form)
-                                .timeout(long_polling_timeout)
-                                .perform();
+      const auto response =
+          http_client.CreateRequest()
+              .post(get_updates_url,
+                    formats::json::ToString(body.ExtractValue()))
+              .timeout(long_polling_timeout)
+              .headers(kContentHeaders)
+              .perform();
 
       response->raise_for_status();
 
@@ -108,7 +120,6 @@ void poll_updates(clients::http::Client &http_client, std::string token,
       }
 
       const auto latest_update_id =
-          // without copy_range it won't work
           *boost::range::max_element(boost::copy_range<std::vector<int64_t>>(
               updates | boost::adaptors::transformed(
                             [](const formats::json::Value &update) {
@@ -131,13 +142,12 @@ void poll_updates(clients::http::Client &http_client, std::string token,
           std::string reply_text{text.data() + kEchoCommand.size(),
                                  text.size() - kEchoCommand.size()};
 
-          auto message_id = std::to_string(message["message_id"].As<int64_t>());
-          auto chat_id = std::to_string(message["chat"]["id"].As<int64_t>());
+          const auto message_id = message["message_id"].As<int64_t>();
+          const auto chat_id = message["chat"]["id"].As<int64_t>();
 
           tasks.push_back(utils::Async(
               task_processor_name, &send_message, std::ref(http_client), token,
-              network_timeout, std::move(chat_id), std::move(message_id),
-              std::move(reply_text)));
+              network_timeout, chat_id, message_id, std::move(reply_text)));
         }
         engine::WaitAllChecked(tasks);
       }
