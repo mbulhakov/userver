@@ -113,3 +113,6 @@ if (USERVER_FEATURE_MYSQL)
   add_subdirectory(mysql_service)
   add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}-mysql_service)
 endif()
+
+add_subdirectory(telegram_bot_service)
+add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}-telegram_bot_service)
